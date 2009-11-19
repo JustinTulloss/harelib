@@ -122,16 +122,7 @@ class MethodReader(object):
         been assembled it is placed in the internal queue.
 
         """
-        while self.queue.empty():
-            try:
-                frame_type, channel, payload = self.source.read_frame()
-            except Exception, e:
-                #
-                # Connection was closed?  Framing Error?
-                #
-                self.queue.put(e)
-                break
-
+        def received_frame(frame_type, channel, payload):
             if self.expected_types[channel] != frame_type:
                 self.queue.put((
                     channel,
@@ -145,6 +136,16 @@ class MethodReader(object):
                 self._process_content_header(channel, payload)
             elif frame_type == 3:
                 self._process_content_body(channel, payload)
+
+        while self.queue.empty():
+            try:
+                self.source.read_frame(received_frame)
+            except Exception, e:
+                #
+                # Connection was closed?  Framing Error?
+                #
+                self.queue.put(e)
+                break
 
 
     def _process_method_frame(self, channel, payload):
@@ -239,6 +240,9 @@ class MethodWriter(object):
 
             self.dest.write_frame(2, channel, payload)
 
-            while body:
-                payload, body = body[:self.frame_max - 8], body[self.frame_max -8:]
-                self.dest.write_frame(3, channel, payload)
+            def write_some_more():
+                if (body):
+                    payload, body = body[:self.frame_max - 8], body[self.frame_max -8:]
+                    self.dest.write_frame(3, channel, payload, write_some_more)
+
+            write_some_more()

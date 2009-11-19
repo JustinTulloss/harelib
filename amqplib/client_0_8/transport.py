@@ -21,6 +21,8 @@ Read/Write AMQP frames over network transports.
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301
 
 import socket
+import iostream
+import ioloop
 
 #
 # See if Python 2.6+ SSL support is available
@@ -51,28 +53,31 @@ class _AbstractTransport(object):
         else:
             port = AMQP_PORT
 
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.sock.settimeout(connect_timeout)
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(connect_timeout)
 
         try:
-            self.sock.connect((host, port))
+            sock.connect((host, port))
         except socket.error:
-            self.sock.close()
+            sock.close()
             raise
-        self.sock.settimeout(None)
+        sock.settimeout(None)
+
+        self.stream = IOStream(sock)
 
         self._setup_transport()
 
         self._write(AMQP_PROTOCOL_HEADER)
 
+        ioloop.IOLoop.instance().start()
 
     def __del__(self):
         self.close()
 
 
-    def _read(self, n):
+    def _read(self, n, callback = None):
         """
-        Read exactly n bytes from the peer
+        Read exactly n bytes from the peer, call back when you're done.
 
         """
         raise NotImplementedError('Must be overriden in subclass')
@@ -87,37 +92,46 @@ class _AbstractTransport(object):
         pass
 
 
-    def _write(self, s):
+    def _write(self, s, callback = None):
         """
-        Completely write a string to the peer.
+        Completely write a string to the peer, call the callback on completion.
 
         """
         raise NotImplementedError('Must be overriden in subclass')
 
 
     def close(self):
-        if self.sock is not None:
-            self.sock.close()
-            self.sock = None
+        if self.stream is not None:
+            self.stream.close()
+            ioloop.IOLoop.instance().stop()
 
-
-    def read_frame(self):
+    def read_frame(self, callback = None):
         """
-        Read an AMQP frame.
+        Read an AMQP frame, call the callback when you're done.
 
         """
-        frame_type, channel, size = unpack('>BHI', self._read(7))
-        payload = self._read(size)
-        ch = self._read(1)
-        if ch == '\xce':
-            return frame_type, channel, payload
-        else:
-            raise Exception('Framing Error, received 0x%02x while expecting 0xce' % ord(ch))
 
-
-    def write_frame(self, frame_type, channel, payload):
         """
-        Write out an AMQP frame.
+        Python can be deeply twisted, so in async code, just keep in mind that
+        the least indented code is what happens first. Just because it's written
+        further down the page doesn't mean it happens later.
+        """
+        def received_data(data):
+            frame_type, channel, size = unpack('>BHI', data)
+            def received_payload(payload):
+                def received_ch(ch):
+                    if ch == '\xce':
+                        callback(frame_type, channel, payload)
+                    else:
+                        raise Exception(
+                            'Framing Error, received 0x%02x while expecting 0xce' % ord(ch))
+                self._read(1, received_ch)
+            self._read(size, received_payload)
+        self._read(7, received_data))
+
+    def write_frame(self, frame_type, channel, payload, callback = None):
+        """
+        Write out an AMQP frame, call the callback when you're done.
 
         """
         size = len(payload)
@@ -187,26 +201,8 @@ class TCPTransport(_AbstractTransport):
         do our own buffered reads.
 
         """
-        self._write = self.sock.sendall
-        self._read_buffer = ''
-
-
-    def _read(self, n):
-        """
-        Read exactly n bytes from the socket
-
-        """
-        while len(self._read_buffer) < n:
-            s = self.sock.recv(65536)
-            if not s:
-                raise IOError('Socket closed')
-            self._read_buffer += s
-
-        result = self._read_buffer[:n]
-        self._read_buffer = self._read_buffer[n:]
-
-        return result
-
+        self._write = self.stream.write
+        self._read = self.stream.read
 
 def create_transport(host, connect_timeout, ssl=False):
     """
