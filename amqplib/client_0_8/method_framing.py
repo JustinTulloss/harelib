@@ -122,6 +122,7 @@ class MethodReader(object):
         been assembled it is placed in the internal queue.
 
         """
+        print "next method"
         def received_frame(frame_type, channel, payload):
             if self.expected_types[channel] != frame_type:
                 self.queue.put((
@@ -228,7 +229,7 @@ class MethodWriter(object):
         self.frame_max = frame_max
 
 
-    def write_method(self, channel, method_sig, args, content=None):
+    def write_method(self, channel, method_sig, args, content=None, callback=None):
         payload = pack('>HH', method_sig[0], method_sig[1]) + args
 
         self.dest.write_frame(1, channel, payload)
@@ -244,5 +245,7 @@ class MethodWriter(object):
                 if (body):
                     payload, body = body[:self.frame_max - 8], body[self.frame_max -8:]
                     self.dest.write_frame(3, channel, payload, write_some_more)
+                elif callback:
+                    callback()
 
             write_some_more()

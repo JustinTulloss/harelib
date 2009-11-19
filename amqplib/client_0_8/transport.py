@@ -21,8 +21,8 @@ Read/Write AMQP frames over network transports.
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301
 
 import socket
-import iostream
-import ioloop
+from iostream import IOStream
+from iothread import IOThread
 
 #
 # See if Python 2.6+ SSL support is available
@@ -53,23 +53,22 @@ class _AbstractTransport(object):
         else:
             port = AMQP_PORT
 
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(connect_timeout)
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.sock.settimeout(connect_timeout)
 
         try:
-            sock.connect((host, port))
-        except socket.error:
-            sock.close()
+            self.sock.connect((host, port))
+        except self.socket.error:
+            self.sock.close()
             raise
-        sock.settimeout(None)
+        self.sock.settimeout(None)
 
-        self.stream = IOStream(sock)
 
         self._setup_transport()
 
-        self._write(AMQP_PROTOCOL_HEADER)
+        self.stream = IOStream(self.sock)
 
-        ioloop.IOLoop.instance().start()
+        self._write(AMQP_PROTOCOL_HEADER)
 
     def __del__(self):
         self.close()
@@ -80,7 +79,12 @@ class _AbstractTransport(object):
         Read exactly n bytes from the peer, call back when you're done.
 
         """
-        raise NotImplementedError('Must be overriden in subclass')
+        def cb(data):
+            print "received %d bytes" % len(data)
+            if callable(callback):
+                callback(data)
+
+        self.stream.read_bytes(n, cb)
 
 
     def _setup_transport(self):
@@ -97,13 +101,18 @@ class _AbstractTransport(object):
         Completely write a string to the peer, call the callback on completion.
 
         """
-        raise NotImplementedError('Must be overriden in subclass')
+        def cb():
+            if callable(callback):
+                callback()
+
+        self.stream.write(s, cb)
 
 
     def close(self):
         if self.stream is not None:
             self.stream.close()
-            ioloop.IOLoop.instance().stop()
+        if self.sock is not None:
+            self.sock.close()
 
     def read_frame(self, callback = None):
         """
@@ -121,13 +130,14 @@ class _AbstractTransport(object):
             def received_payload(payload):
                 def received_ch(ch):
                     if ch == '\xce':
+                        print "successfully read shit, calling back"
                         callback(frame_type, channel, payload)
                     else:
                         raise Exception(
                             'Framing Error, received 0x%02x while expecting 0xce' % ord(ch))
                 self._read(1, received_ch)
             self._read(size, received_payload)
-        self._read(7, received_data))
+        self._read(7, received_data)
 
     def write_frame(self, frame_type, channel, payload, callback = None):
         """
@@ -136,8 +146,7 @@ class _AbstractTransport(object):
         """
         size = len(payload)
         self._write(pack('>BHI%dsB' % size,
-            frame_type, channel, size, payload, 0xce))
-
+            frame_type, channel, size, payload, 0xce), callback)
 
 class SSLTransport(_AbstractTransport):
     """
@@ -152,41 +161,16 @@ class SSLTransport(_AbstractTransport):
 
         """
         if HAVE_PY26_SSL:
-            self.sslobj = ssl.wrap_socket(self.sock)
-            self.sslobj.do_handshake()
+            self.sock= ssl.wrap_socket(self.sock)
+            self.sock.do_handshake()
         else:
-            self.sslobj = socket.ssl(self.sock)
+            self.sock = socket.ssl(self.sock)
 
+    def _write(self, *args, **kwargs):
+        self.stream.write(*args, **kwargs)
 
-    def _read(self, n):
-        """
-        It seems that SSL Objects read() method may not supply as much
-        as you're asking for, at least with extremely large messages.
-        somewhere > 16K - found this in the test_channel.py test_large
-        unittest.
-
-        """
-        result = self.sslobj.read(n)
-
-        while len(result) < n:
-            s = self.sslobj.read(n - len(result))
-            if not s:
-                raise IOError('Socket closed')
-            result += s
-
-        return result
-
-
-    def _write(self, s):
-        """
-        Write a string out to the SSL socket fully.
-
-        """
-        while s:
-            n = self.sslobj.write(s)
-            if not n:
-                raise IOError('Socket closed')
-            s = s[n:]
+    def _read(self, *args, **kwargs):
+        self.stream.read(*args, **kwargs)
 
 
 
@@ -195,14 +179,7 @@ class TCPTransport(_AbstractTransport):
     Transport that deals directly with TCP socket.
 
     """
-    def _setup_transport(self):
-        """
-        Setup to _write() directly to the socket, and
-        do our own buffered reads.
-
-        """
-        self._write = self.stream.write
-        self._read = self.stream.read
+    pass
 
 def create_transport(host, connect_timeout, ssl=False):
     """
@@ -210,6 +187,7 @@ def create_transport(host, connect_timeout, ssl=False):
     select and create a subclass of _AbstractTransport.
 
     """
+    IOThread.start()
     if ssl:
         return SSLTransport(host, connect_timeout)
     else:

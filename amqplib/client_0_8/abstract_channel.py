@@ -58,7 +58,7 @@ class AbstractChannel(object):
         self.close()
 
 
-    def _send_method(self, method_sig, args='', content=None):
+    def _send_method(self, method_sig, args='', content=None, callback=None):
         """
         Send a method for our channel.
 
@@ -67,7 +67,7 @@ class AbstractChannel(object):
             args = args.getvalue()
 
         self.connection.method_writer.write_method(self.channel_id,
-            method_sig, args, content)
+            method_sig, args, content, callback)
 
 
     def close(self):

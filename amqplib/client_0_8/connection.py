@@ -381,8 +381,7 @@ class Connection(AbstractChannel):
             received a Close-Ok handshake method SHOULD log the error.
 
         """
-        self._send_method((10, 61))
-        self._do_close()
+        self._send_method((10, 61), callback = lambda: self._do_close())
 
 
     def _close_ok(self, args):
