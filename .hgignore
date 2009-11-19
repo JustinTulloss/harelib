@@ -1,2 +1,5 @@
-\.pyc$
-\.swp$
+syntax: glob
+*.pyc
+*.swp
+*/build/*
+
